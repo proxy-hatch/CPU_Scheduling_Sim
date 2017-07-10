@@ -18,7 +18,7 @@
 #include <sys/poll.h>       // poll() to check if there is data on stdin buffer
 #include <errno.h>
 #include <limits.h> // INT_MAX||INT_MAX
-#include "LIST.h"
+#include "list.h"
 
 #define UNUSED 999  // for initializing unused semaphores
 // DEBUG macro is used to turn on various debugging features
@@ -54,11 +54,11 @@ typedef struct pcb {
 // semaphore data struct to be provided to the user
 typedef struct sem {
     unsigned int sem;
-    list *procs; // a list of processes controlled by this semaphore
+    LIST *procs; // a list of processes controlled by this semaphore
 } sem;
 
 unsigned int highestPID;
-list *priorityQ[3];     // 3 lists
+LIST *priorityQ[3];     // 3 lists
 unsigned int run;      // global variable to control whether the simulation is shutting down
 pcb *proc_init;     // special process to be put when nothing else is running
 pcb *runningProc;       // ptr to the process that is currently running
@@ -119,10 +119,11 @@ int enqueueProc(pcb *aProc) {
 
 // creates a new process initialized the highest priority, as multi-level feedback queue dictates
 pcb *createProc() {
-    if (highestPID > MAXNODECOUNT - 1) {
-        printf("Process creation failed! All the queues are full!\n");
-        return NULL;
-    }
+    // for my own LIST.h implementation only
+//    if (highestPID > MAXNODECOUNT - 1) {
+//        printf("Process creation failed! All the queues are full!\n");
+//        return NULL;
+//    }
     pcb *newProc = malloc(sizeof(pcb));
     // assume machine is 32 bit, unsigned int is 2 byte
     if (highestPID == 65535) {  //overflow occurred, loop back
@@ -397,8 +398,8 @@ int main() {
     priorityQ[0] = ListCreate();
     priorityQ[1] = ListCreate();
     priorityQ[2] = ListCreate();
-    list *waitingReply = ListCreate();    // used for sender blocked until reply
-    list *waitingRcv = ListCreate();      // used for rcvers blocked until received
+    LIST *waitingReply = ListCreate();    // used for sender blocked until reply
+    LIST *waitingRcv = ListCreate();      // used for rcvers blocked until received
     // initialize all semaphores  to -32766, the 4 byte int max on the negative side
     // the program will use this number to check if semaphore is initialized
     sem sems[5] = {[0 ... 4].sem=UNUSED};
