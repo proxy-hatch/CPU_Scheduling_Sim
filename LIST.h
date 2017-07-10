@@ -1,8 +1,16 @@
+//// This project is created to fulfill CMPT300 Assignment 1 requirements
+//// It consists of an statically allocated List ADT in the interest of performance
+//// It supports a range of methods for the user of this library
+////
+////
+//// Created on: May 23, 2017
+//// Last Modified: Jul 9, 2017
+//// Author: Yu Xuan (Shawn) Wang
+//// Email: yxwang@sfu.ca
+//// Student #: 301227972
+// UNRESOLVED BUG: curr ptr in List structures will get corrupted from time to time. Patches have been applied to increase robustness
+// UNRESOLVED BUG: MEMORY LEAK: node would occasionally disappear from list
 //
-// Created by shawn on 23/05/17.
-//
-// UNRESOLVED BUG: curr ptr in List structures will get corrupted from time to time
-
 #pragma once
 #include <stdlib.h>    // NULL macro
 

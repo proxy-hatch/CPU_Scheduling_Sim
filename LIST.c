@@ -1,5 +1,15 @@
-//
-// Created by Shawn on 23/05/17.
+//// This project is created to fulfill CMPT300 Assignment 1 requirements
+//// It consists of an statically allocated List ADT in the interest of performance
+//// It supports a range of methods for the user of this library
+////
+////
+//// Created on: May 23, 2017
+//// Last Modified: Jul 9, 2017
+//// Author: Yu Xuan (Shawn) Wang
+//// Email: yxwang@sfu.ca
+//// Student #: 301227972
+// UNRESOLVED BUG: curr ptr in List structures will get corrupted from time to time. Patches have been applied to increase robustness
+// UNRESOLVED BUG: MEMORY LEAK: node would occasionally disappear from list
 //
 
 #pragma once
@@ -306,7 +316,7 @@ int ListAppend(list *aList, void *anItem) {
     if ((aList->head && aList->head->belong != aList) || (aList->tail && aList->tail->belong != aList) ||
         (aList->curr >= nodePool && aList->curr < nodePool + MAXNODECOUNT &&
          aList->curr->belong != aList))
-        return NULL;
+        return -1;
 
     // Invalid aList->curr is allowed. We do not need it to know where to insert new node
     // This is also an opportunity to have it bounce back to a non-error state
@@ -350,7 +360,7 @@ int ListPrepend(list *aList, void *anItem) {
     if ((aList->head && aList->head->belong != aList) || (aList->tail && aList->tail->belong != aList) ||
         (aList->curr >= nodePool && aList->curr < nodePool + MAXNODECOUNT &&
          aList->curr->belong != aList))
-        return 0;
+        return -1;
 
 
     // Invalid aList->curr is allowed. We do not need it to know where to insert new node
@@ -388,6 +398,7 @@ int ListPrepend(list *aList, void *anItem) {
 }
 
 // Return current item and take it out of list. Make the next item the current one.
+// corrupted curr ptr? DONT KNOW WHERE TO DELETE? Set the tail to be deleted (for the convenience of as02/as03)
 void *ListRemove(list *aList) {
     // error check: not active || one of the head/tail missing || numNodes recorded greater than threshold
     if (!aList || !aList->boolActive || (!aList->head != !aList->tail) || numNodes > MAXNODECOUNT)
@@ -402,7 +413,7 @@ void *ListRemove(list *aList) {
     // Nothing to do
     if (!aList->head )
         return NULL;
-    // DONT KNOW WHERE TO DELETE! Set the tail to be deleted (for the convenience of as02)
+    // DONT KNOW WHERE TO DELETE! Set the tail to be deleted (for the convenience of as02/as03)
     if(!aList->curr || !aList->curr->boolActive || aList->curr < nodePool ||
           aList->curr >= nodePool + numNodes)
         aList->curr=aList->tail;
@@ -563,10 +574,8 @@ void *ListTrim(list *aList) {
     // error check: not active || one of the head/tail missing || empty list
     if (!aList || !aList->boolActive || (!aList->head != !aList->tail)||!aList->head)
         return NULL;
-    // head or tail doesnt belong to the list || curr ptr points to an effective node but does not belong to the list
-    if ((aList->head && aList->head->belong != aList) || (aList->tail && aList->tail->belong != aList) ||
-        (aList->curr >= nodePool && aList->curr < nodePool + MAXNODECOUNT &&
-         aList->curr->belong != aList))
+    // head or tail doesnt belong to the list
+    if ((aList->head && aList->head->belong != aList))
         return NULL;
     // error check: clean tail
     if(aList->tail->next)
@@ -583,7 +592,7 @@ void *ListTrim(list *aList) {
 // Comparator returns 0 if the item and comparisonArg don't match, or 1 if they do.
 // Exactly what constitutes a match is up to the implementor of comparator.
 // If a match is found, the current pointer is left at the matched item and the pointer to that item is returned.
-// If no match is found, the current pointer is left beyond the end of the list and a NULL pointer is returned.
+// If no match is not found, the current pointer is left beyond the end of the list and a NULL pointer is returned.
 // Shawn's note: comparator is a pointer to a routine in testbench with parameter data1, data2; comparisonArg is data2
 void *ListSearch(list *aList, int (*comparator)(), void *comparisonArg) {
     // error check: not active || one of the head/tail missing
