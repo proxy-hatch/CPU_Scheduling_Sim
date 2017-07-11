@@ -18,7 +18,7 @@
 #include <sys/poll.h>       // poll() to check if there is data on stdin buffer
 #include <errno.h>
 #include <limits.h> // INT_MAX||INT_MAX
-#include "list.h"
+#include "LIST.h"
 
 #define UNUSED 999  // for initializing unused semaphores
 // DEBUG macro is used to turn on various debugging features
@@ -48,17 +48,23 @@ typedef struct pcb {
     // https://stackoverflow.com/a/9966679
     unsigned int priority;   // 0: top; 1: mid; 2: low
     state state;
-    char procMsg[41];   // as instructed: null terminated, 40 char max
+    unsigned int remotePID;      // the other procecss that (sent this process a msg)||(this process is sending msg to)
+    char procMsg[41];   // as instructed: str to store the msg awaiting rcv. null terminated, 40 char max
 } pcb;
 
 // semaphore data struct to be provided to the user
 typedef struct sem {
-    unsigned int sem;
-    LIST *procs; // a list of processes controlled by this semaphore
+    int sem;
+    list *procs; // a list of processes controlled by this semaphore
 } sem;
 
 unsigned int highestPID;
-LIST *priorityQ[3];     // 3 lists
+list *priorityQ[3];     // 3 lists for priority queue
+sem sems[5] = {[0 ... 4].sem=UNUSED};        // 5 semaphores available for user controlling processes
+list *waitingReply;    // used for sender blocked until reply
+list *waitingRcv;      // used for rcvers blocked until received
+
+// list procs will be initialized as needed
 unsigned int run;      // global variable to control whether the simulation is shutting down
 pcb *proc_init;     // special process to be put when nothing else is running
 pcb *runningProc;       // ptr to the process that is currently running
@@ -68,6 +74,82 @@ pcb *runningProc;       // ptr to the process that is currently running
 // |-------------------------------------------------------------------------|
 // |                          Helper Functions                               |
 // |-------------------------------------------------------------------------|
+
+// print the process specified
+// return 0 upon success, 1 upon failure
+int printProc(pcb *procFound) {
+    if (procFound) {
+        printf("The process with pID=%u, has:\n", procFound->pID);
+        printf("\tPriority: %u (0 being top, 2 being lowest)\n", procFound->priority);
+        printf("\tState: %s\n", enumStrings[procFound->state]);
+        if (procFound->remotePID != UNUSED)
+            printf("\tThis process is communicating with: pID%u\n", procFound->remotePID);
+        else
+            puts("\tThis process is not communicating with another process\n");
+        printf("\tStored Message: \"%s\"\n\n", procFound->procMsg);
+        return 0;
+    } else
+        return 1;
+}
+
+// Compare Process IDs (used for ListSearch() )
+int findPID(void *proc1, void *pID) {
+    return ((pcb *) proc1)->pID == *(unsigned int *) pID ? 1 : 0;
+}
+
+// Calls ListSearch() on each priority queue
+// returns the queue priority # if found
+// returns -1 if not found
+int priorityQSearch(int (*comparator)(), void *comparisonArg) {
+    pcb *procFound;
+    for (unsigned int i = 0; i < 3; i++) {
+        procFound = ListSearch(priorityQ[i], comparator, comparisonArg);
+        if (procFound) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Calls ListSearch() on each enabled sem queue
+// returns the sem sequence # if found
+// returns -1 if not found
+int semSearch(int (*comparator)(), void *comparisonArg) {
+    pcb *procFound;
+    for (unsigned int i = 0; i < 5; i++) {
+        if (sems[i].sem != UNUSED) {
+            procFound = ListSearch(sems[i].procs, comparator, comparisonArg);
+            if (procFound) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+// returns 1 if there is no more process besides proc_init
+// else return 0
+int thereIsNoProc() {
+    int i;
+    // check all priority queues
+    for (i = 0; i < 3; i++) {
+        if (ListCount(priorityQ[i]))
+            return 1;
+    }
+    // check all blocked queues
+    if (ListCount(waitingRcv))
+        return 1;
+    if (ListCount(waitingReply))
+        return 1;
+    for (i = 0; i < 5; i++) {
+        if (sems[i].sem != UNUSED && ListCount(priorityQ[i]))
+            return 1;
+    }
+    // runningProc has to be proc_init if there are no other process
+    if (runningProc && proc_init != runningProc)
+        return 1;
+    return 0;
+}
 
 // attempts to enqueue the process into the priority queue.
 // If a queue is full it will try to put it in the one below until queues are exhausted,
@@ -119,11 +201,10 @@ int enqueueProc(pcb *aProc) {
 
 // creates a new process initialized the highest priority, as multi-level feedback queue dictates
 pcb *createProc() {
-    // for my own LIST.h implementation only
-//    if (highestPID > MAXNODECOUNT - 1) {
-//        printf("Process creation failed! All the queues are full!\n");
-//        return NULL;
-//    }
+    if (highestPID > MAXNODECOUNT - 1) {
+        printf("Process creation failed! All the queues are full!\n");
+        return NULL;
+    }
     pcb *newProc = malloc(sizeof(pcb));
     // assume machine is 32 bit, unsigned int is 2 byte
     if (highestPID == 65535) {  //overflow occurred, loop back
@@ -133,6 +214,7 @@ pcb *createProc() {
         newProc->pID = highestPID++;
     newProc->priority = 0;
     newProc->state = READY;
+    newProc->remotePID = UNUSED;
     memset(&(newProc->procMsg), 0, sizeof newProc->procMsg);
     return newProc;
 }
@@ -153,40 +235,38 @@ void runNextProc() {
         proc_init->state = RUNNING;
         runningProc = proc_init;
     }
+    puts("\nThe process now running is:\n");
+#ifdef DEBUG
+    puts("(After calling runNextProc())\n");
+#endif
+    printProc(runningProc);
 }
 
-// Compare Process IDs (used for ListSearch() )
-int findPID(void *proc1, void *pID) {
-    return ((pcb *) proc1)->pID == *(unsigned int *) pID ? 1 : 0;
-}
 
-// Calls ListSearch() on each priority queue
-// returns the queue priority # if found
-// returns -1 if not found
-int priorityQSearch(int (*comparator)(), void *comparisonArg) {
-    pcb *procFound;
-    for (unsigned int i = 0; i < 3; i++) {
-        procFound = ListSearch(priorityQ[i], comparator, comparisonArg);
-        if (procFound) {
-            return i;
+// this function handles the killing of a specific process
+// This function assumes that process has already probably dequeued from whichever data structure
+// This function will also load the next available process if the current running process is killed
+void deleteProc(pcb *delProc) {
+    if (delProc) {
+        if (delProc == proc_init) {
+            if (thereIsNoProc()) {  // time to terminate
+                free(delProc);
+                puts("The special \"init\" process has been killed!\nGoodbye\n");
+                run = 0;
+            } else {
+                fprintf(stderr,
+                        "You have attempted to kill the special \"init\" process!\nThis is not allowed when there are still other processes running!\n");
+            }
+        } else {
+            if (delProc == runningProc)
+                runNextProc();
+            free(delProc);
         }
     }
-    return -1;
+//#ifdef DEBUG
+//        fprintf(stderr,"Warning: Empty pcb *delProc passed int deleteProc!\n");
+//#endif
 }
-
-// print the process specified
-// return 0 upon success, 1 upon failure
-int printProc(pcb *procFound) {
-    if (procFound) {
-        printf("The process with pID=%u, has:\n", procFound->pID);
-        printf("\tPriority: %u (0 being top, 2 being lowest)\n", procFound->priority);
-        printf("\tState: %s\n", enumStrings[procFound->state]);
-        printf("\tStored Message: \"%s\"\n\n", procFound->procMsg);
-        return 0;
-    } else
-        return 1;
-}
-
 
 // check if stdin is empty
 // return 1 if not empty, return 0 if empty
@@ -246,15 +326,14 @@ int strtoi(const char *str) {
 void create_C() {
     // create new process (the pcb)
     pcb *newProc = createProc();
-    if (!newProc)
-        return;
 
     // enqueue process to the top of the priority queue
-    if (enqueueProc(newProc) != 0) {    // failed
+    if (!newProc || enqueueProc(newProc) != 0) {    // failed
         // purge new process
-        free(newProc);
+        if (newProc)
+            free(newProc);
         highestPID--;
-        printf("Process creation failed! Are all the queues full?\n");
+        fprintf(stderr, "Process creation failed! Are all the queues full?\n");
     } else   // success
     {
         printf("Process successfully created! The Process ID assigned is %u\n", newProc->pID);
@@ -264,47 +343,88 @@ void create_C() {
 // Copy the currently running process and put it on the ready Q corresponding to the original process' priority. 
 // Attempting to Fork the "init" process (see below) should fail. 
 // Report: success or failure, the pid of the resulting (new) process on success.
-int fork_F() {}
+void fork_F() {
+    if(runningProc==proc_init){
+        puts("Forking failed. Cannot fork the special process \"init\"\n");
+        return;
+    }
+
+    // create new process (the pcb)
+    pcb *newProc = createProc();
+    if (!newProc) {
+        fprintf(stderr, "Process creation failed! Are all the queues full?\n");
+        return;
+    }
+    // copy pcb
+    newProc->priority = runningProc->priority;
+    newProc->remotePID = runningProc->remotePID;
+    strcpy(newProc->procMsg, runningProc->procMsg);
+    // newProc->state should be kept as READY
+
+    // enqueue process to the top of the priority queue
+    if (enqueueProc(newProc) != 0) {    // failed
+        // purge new process
+        free(newProc);
+        highestPID--;
+        fprintf(stderr, "Process creation failed! Are all the queues full?\n");
+    } else   // success
+    {
+        printf("Process successfully created! The Process ID assigned is %u\n", newProc->pID);
+    }
+}
 
 // kill the named process and remove it from the system.
 // Report: action taken as well as success or failure.
-// return 0 on success, 1 on failure
-int kill_K(pcb *currProc, unsigned int delPID) {
-    pcb *procFound;
-    int queueFound;
+void kill_K(unsigned int delPID) {
+    pcb *procFound = NULL;
+    int queueFound = -1;
+
     // search for the process ID
-    if (currProc->pID == delPID)
-        procFound = currProc;
-    else {
-        if ((queueFound = priorityQSearch(findPID, &delPID)) < 0)
-            return 1;  // did not find
-        else {
-            // remove the node from list
-            // NOTE: Data in node is NOT deleted but returned
-            procFound = ListRemove(priorityQ[queueFound]);
-        }
+    if (runningProc->pID == delPID) {
+        procFound = runningProc;
+    } else if (proc_init->pID == delPID) {
+        procFound = proc_init;
+    } else if ((queueFound = priorityQSearch(findPID, &delPID)) >= 0) {
+        // remove the node from list
+        // NOTE: Data in node is NOT deleted but returned
+        procFound = ListRemove(priorityQ[queueFound]);
+    } else if ((queueFound = semSearch(findPID, &delPID)) >= 0) {
+        procFound = ListRemove(sems[queueFound].procs);
+    } else if (ListSearch(waitingReply, findPID, &delPID) != NULL) {
+        procFound = ListRemove(waitingReply);
+    } else if (ListSearch(waitingRcv, findPID, &delPID) != NULL) {
+        procFound = ListRemove(waitingRcv);
     }
-    // delete if found
+
+    // deletes if found
     if (procFound) {
-        free(procFound);
-        return 0;
-    } else
-        return 1;
+        printf("Deleted:\n");
+        printProc(procFound);
+        deleteProc(procFound);
+    } else {
+        printf("Did not find the process with ID %u.\nDeletion failed. Please try again.\n", delPID);
+    }
 }
 
 // kill the currently running process. 
 // Report: process scheduling information (eg. which process now gets control of the CPU)
-int exit_E() {
-
-
-// GUARD AGAINST DELETING INIT WHEN NOT EMPTY
-//    RUN=0 WHEN NOTHING IS RUNNINGPROCESS=null
+void exit_E() {
+    // deletes if found (deleteProc() will filter if runningProc==proc_init
+    if (runningProc) {
+        deleteProc(runningProc);
+    } else {
+#ifdef DEBUG
+        fprintf(stderr, "exit_E() failed! There is no runningProc!\n");
+#endif
+    }
 }
 
 // time quantum of running process expires.
 // Report: action taken (eg. process scheduling information)
-// Returns ptr to the next running process, return NULL if no process is left (time to terminate).
-quantum_Q() {
+void quantum_Q() {
+    puts("The currently running process\n");
+    printProc(runningProc);
+    puts("will now stop occupying the CPU.\n");
     runningProc->state = READY;
     if (runningProc->priority < 2)
         (runningProc->priority)++;
@@ -314,7 +434,6 @@ quantum_Q() {
 #ifdef DEBUG
         fprintf(stderr, "ListPrepend(priorityQ[%u],currRunning (PID=%u)) Failed!\n", runningProc->priority,
                 runningProc->pID);
-        return NULL;
 #endif
     }
     runNextProc();
@@ -322,66 +441,199 @@ quantum_Q() {
 
 // send a message to another process - block until reply. 
 // Report: success or failure, scheduling information, and reply source and text (once reply arrives)
-int send_S() {}
+void send_S(unsigned int remotePID, char *msg) {
+    pcb *procFound = NULL;
+    int queueFound;
+    int skipBlocking_bool = 0;        // if the process is already blocked by a semaphore, or if the sender is proc_init, skip blocking
+
+    // check if sending is allowed for runningProc
+    if (runningProc->remotePID != UNUSED) {
+        printf("Sending message \"%s\" to pID%u failed: the current running process is currently communicating with process pID%u.\nDetails:\n",
+               msg, remotePID, remotePID);
+        printProc(runningProc);
+
+    }
+        // search for the process ID to be sent
+    else if (runningProc->pID == remotePID) {
+        printf("Sending message \"%s\" to pID%u failed: Cannot send message to self\n", msg, remotePID);
+    } else if (proc_init->pID == remotePID) {
+        // check if its communicating with a message right now
+        if (proc_init->remotePID != UNUSED)
+            printf("Sending message \"%s\" to special process \"init\" failed: It is currently communicating with another process.\n",
+                   msg);
+        else {
+            procFound = proc_init;
+        }
+    } else if ((queueFound = priorityQSearch(findPID, &remotePID)) >= 0) {
+        procFound = ListCurr(priorityQ[queueFound]);
+    } else if ((queueFound = semSearch(findPID, &remotePID)) >= 0) {
+        skipBlocking_bool = 1;
+        procFound = ListCurr(sems[queueFound].procs);
+    } else if (ListSearch(waitingReply, findPID, &remotePID) != NULL) {
+        procFound = ListCurr(waitingReply);
+        printf("Sending message \"%s\" to pID%u failed: process with pID%u is currently waiting for a reply.\nDetails:\n",
+               msg, remotePID, remotePID);
+        printProc(procFound);
+        procFound = NULL;
+    } else if (ListSearch(waitingRcv, findPID, &remotePID) != NULL) {
+        procFound = ListCurr(waitingRcv);
+        printf("Sending message \"%s\" to pID%u failed: process with pID%u is currently waiting to receive a message.\nDetails:\n",
+               msg, remotePID, remotePID);
+        printProc(procFound);
+        procFound = NULL;
+    } else
+        printf("Sending message \"%s\" to pID%u failed: Cannot find process with pID%u\n", msg, remotePID, remotePID);
+
+    // additional check
+    if (runningProc == proc_init)
+        skipBlocking_bool = 1;
+
+    if (procFound) {
+        if (procFound->remotePID != UNUSED) {
+            printf("Sending message \"%s\" to pID%u failed: process with pID%u is currently communicating with another process.\nDetails:\n",
+                   msg, remotePID, remotePID);
+            printProc(procFound);
+            procFound = NULL;
+            return;
+        }
+        // send msg
+        procFound->remotePID = runningProc->pID;
+        strcpy(procFound->procMsg, msg);
+        // log communicating partner
+        runningProc->remotePID = procFound->pID;
+
+        // block running process
+        if (!skipBlocking_bool) {
+            runningProc->state = BLOCKED;
+            ListPrepend(waitingReply, runningProc);
+            runNextProc();
+        }
+    }
+}
 
 // receive a message - block until one arrives 
 // Report: scheduling information and (once msg is received) the message text and source of message
-int receive_R() {}
+int receive_R() {
+    // msg awaiting rcv exist
+    if (strlen(runningProc->procMsg)) {
+        printf("You have a new message from sender pID%u:\n", runningProc->remotePID);
+        printf("\t\"%s\"\n", runningProc->procMsg);
+        // clear inbox but maintain connection
+        memset(&(runningProc->procMsg), 0, sizeof runningProc->procMsg);
+    } else {
+        puts("No new messages.\n");
+        if(runningProc!=proc_init){
+            puts("The current running process:\n");
+            printProc(runningProc);
+            puts("has been blocked to wait for reply");
+            ListPrepend(waitingRcv, runningProc);
+            runNextProc();
+        }
+    }
+}
 
 // unblocks sender and delivers reply
 // Report: success or failure
-int reply_Y() {}
+void reply_Y(unsigned int remotePID, char *msg) {
+return;
+}
 
 // Initialize the named semaphore with the value given. 
 // ID's can take a value from 0 to 4. 
 // This can only be done once for a semaphore - subsequent attempts result in error.
 // Report: action taken as well as success or failure.
-int sem_N() {}
+int sem_N(unsigned int semID, int initVal) {
+    if (semID > 4)
+        printf("semaphore [%u] is too large.\nOnly value 0-4 is acceptable. Please try again.\n", semID);
+    else if (sems[semID].sem == UNUSED) {
+        sems[semID].sem = initVal;
+        printf("Semaphore [%u] is successfully initialized to %d.\n", semID, initVal);
+    } else
+        printf("Semaphore [%u] is already in use.\n", semID);
+}
 
 // execute the semaphore P operation on behalf of the running process. 
 // You can assume sempahores IDs numbered 0 through 4.
 // Report: action taken (blocked or not) as well as success or failure.
-int sem_P() {}
+void sem_P(unsigned int semID) {
+    if (sems[semID].sem == UNUSED) {
+        printf("The Semaphore [%u] you have attempted to use is not yet initialized.\n Use command \"N %u\" first.\n",
+               semID, semID);
+        return;
+    }
+    else if (runningProc == proc_init) {
+        printf("The P operated on semaphore [%u] failed because blocking the special process \"init\" is prohibited.\n", semID);
+        return;
+    } else
+        printf("The P operated on semaphore [%u] was successfully executed.\n", semID);
+
+    puts("The current running process:\n");
+    printProc(runningProc);
+    if (sems[semID].sem <= 0) {    // implement blocking
+        runningProc->state = BLOCKED;
+        ListPrepend(sems[semID].procs, runningProc);
+        runNextProc();
+        puts("is now blocked.\n");
+    } else
+        puts("is not blocked and still running.\n");
+    (sems[semID].sem)--;
+}
 
 // execute the semaphore V operation on behalf of the running process. 
 // You can assume sempahores IDs numbered 0 through 4. 
 // Report: action taken (whether/ which process was readied) as well as success or failure.
-int sem_V() {}
+void sem_V(unsigned int semID) {
+    pcb *poppedProc;
+
+    if (sems[semID].sem == UNUSED) {
+        printf("The Semaphore [%u] you have attempted to use is not yet initialized.\n Use command \"N %u\" first.\n",
+               semID, semID);
+        return;
+    } else
+        printf("The V operated on semaphore [%u] was successfully executed.\n", semID);
+
+    if ((poppedProc = ListTrim(sems[semID].procs)) != NULL) {
+        puts("The process:\n");
+        printProc(poppedProc);
+        puts("is now readied\n");
+        enqueueProc(poppedProc);
+    } else
+        printf("No process was readied as no process was blocked by semaphore [%u]\n", semID);
+
+    (sems[semID].sem)++;
+}
 
 // dump complete state information of process to screen 
 // (this includes process status and anything else you can think of)
 void procinfo_I(unsigned int pID) {
-    // check if its the special process proc_init
-    if (pID == proc_init->pID) {
-        printProc(proc_init);
+    pcb *procFound = NULL;
+    int queueFound = -1;
+    // search for the process ID
+    if (runningProc->pID == pID) {
+        procFound = runningProc;
+    } else if (proc_init->pID == pID) {
+        procFound = proc_init;
+    } else if ((queueFound = priorityQSearch(findPID, &pID)) >= 0) {
+        procFound = ListCurr(priorityQ[queueFound]);
+    } else if ((queueFound = semSearch(findPID, &pID)) >= 0) {
+        procFound = ListCurr(sems[queueFound].procs);
+    } else if (ListSearch(waitingReply, findPID, &pID) != NULL) {
+        procFound = ListCurr(waitingReply);
+    } else if (ListSearch(waitingRcv, findPID, &pID) != NULL) {
+        procFound = ListCurr(waitingRcv);
     }
-        // check if its the currently running process
-    else if (pID = runningProc->pID) {
-        printProc(proc_init);
-    } else {
-        // search for this pID in the priority queues
-        int queueFound;
-        pcb *procFound;
-        if ((queueFound = priorityQSearch(findPID, &pID)) < 0) {
-            printf("The Process ID you requested does not belong to any created process. Please try again.\n");
-        } else {
-            procFound = ListCurr(priorityQ[queueFound]);
-            if (printProc(procFound)) {
-                printf("The Process ID you requested does not belong to any created process. Please try again.\n");
-#ifdef DEBUG
-                fprintf(stderr, "priorityQSearch() reported finding pID%u but ListCurr() was unable to retrieve it!\n",
-                        pID);
-#endif
-            }
-        }
-    }
+
+    if (procFound)
+        printProc(procFound);
+    else
+        printf("The Process ID you requested does not belong to any created process. Please try again.\n");
 }
 
 // display all process queues and their contents
 void totalinfo_T() {
     pcb *currItem;
     for (unsigned int i = 0; i < 3; i++) {
-        printf("Displaying items in Priority [%u] queue:\n\n", i);
+        printf("Displaying processes in Priority [%u] ready queue:\n", i);
         currItem = ListLast(priorityQ[i]);
         while (currItem) {
             printProc(currItem);
@@ -390,6 +642,38 @@ void totalinfo_T() {
         // List->curr is out of bounds at this point, reset it to tail for consistency
         ListLast(priorityQ[i]);
     }
+
+    for (unsigned int i = 0; i < 5; i++) {
+        if (sems[i].sem != UNUSED) {
+            printf("Displaying processes controlled by active semaphore [%u] :\n", i);
+            currItem = ListLast(sems[i].procs);
+            while (currItem) {
+                printProc(currItem);
+                currItem = ListPrev(sems[i].procs);
+            }
+            // List->curr is out of bounds at this point, reset it to tail for consistency
+            ListLast(sems[i].procs);
+        }
+
+    }
+
+    printf("Displaying processes blocked waiting to receive a message:\n");
+    currItem = ListLast(waitingRcv);
+    while (currItem) {
+        printProc(currItem);
+        currItem = ListPrev(waitingRcv);
+    }
+    // List->curr is out of bounds at this point, reset it to tail for consistency
+    ListLast(waitingRcv);
+
+    printf("Displaying processes that has sent a message and blocked waiting for a reply:\n");
+    currItem = ListLast(waitingReply);
+    while (currItem) {
+        printProc(currItem);
+        currItem = ListPrev(waitingReply);
+    }
+    // List->curr is out of bounds at this point, reset it to tail for consistency
+    ListLast(waitingReply);
 }
 
 
@@ -398,12 +682,8 @@ int main() {
     priorityQ[0] = ListCreate();
     priorityQ[1] = ListCreate();
     priorityQ[2] = ListCreate();
-    LIST *waitingReply = ListCreate();    // used for sender blocked until reply
-    LIST *waitingRcv = ListCreate();      // used for rcvers blocked until received
-    // initialize all semaphores  to -32766, the 4 byte int max on the negative side
-    // the program will use this number to check if semaphore is initialized
-    sem sems[5] = {[0 ... 4].sem=UNUSED};
-    // list procs will be initialized as needed
+    waitingReply = ListCreate();    // used for sender blocked until reply
+    waitingRcv = ListCreate();      // used for rcvers blocked until received
 
     // global variables initialization
     run = 1;
@@ -411,22 +691,27 @@ int main() {
     proc_init = createProc();     // proc_init is set to run at the beginning
     runningProc = proc_init;       // ptr to the process that is currently running
     // local variables initialization
-    char usrInput[64];      // since the expected input is single char, buffer overflow is ok
-
-    int pIDRequest;
-    char *arg1;       // return variable for strtok()
-    char *arg2;       // return variable for strtok()
+    char usrInput[64];      // since the expected input is single char + a 40char max msg + some whitespace, buffer overflow is ok
+    int IDRequest;
+    char *arg1;       // parsed first argument (flag)
+    char *arg2;       // parsed second argument (pID)
+    char *arg3;       // parsed third argument (msg)
     char flag;
 
     while (run) {
         if (stdinIsNotEmpty()) {
             if (!getstdinStr(usrInput, 64)) {
+                // clear argument variables
+                arg2 = NULL;
+                arg3 = NULL;
                 // second call with NULL returns the second token:
                 // http://www.cplusplus.com/reference/cstring/strtok/
                 arg1 = strtok(usrInput, " \t\r\n\v\f");     // trim any whitespaces
-                if (arg1)
+                if (arg1) {
                     arg2 = strtok(NULL, " \t\r\n\v\f");
-
+                    if (arg2)
+                        arg3 = strtok(NULL, " \t\r\n\v\f");
+                }
                 // if flag is invalid, set it to invalid and await 'default' case
                 if (!arg1 || strlen(arg1) > 1)       // arg1 might be NULL or longer than 1 char
                     flag = 'Z';
@@ -438,30 +723,75 @@ int main() {
                         create_C();
                         break;
                     case 'F'  :
+                        fork_F();
                         break;
                     case 'K'  :
+                        // interpret the second usr inputted argument as pID
+                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
+                            kill_K((unsigned int) IDRequest);
+                        else
+                            puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
                         break;
                     case 'E'  :
+                        exit_E();
                         break;
                     case 'Q'  :
                         quantum_Q();
                         break;
                     case 'S'  :
+                        // interpret the second usr inputted argument as pID, third as msg
+                        if (!arg2 || (IDRequest = strtoi(arg2)) < 0)
+                            puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
+                        else if (!arg3 || !strlen(arg3))
+                            puts("No message was detected. Please try again.\n");
+                        else
+                            send_S((unsigned int) IDRequest, arg3);
                         break;
                     case 'R'  :
+                        receive_R();
                         break;
                     case 'Y'  :
+                        // interpret the second usr inputted argument as pID, third as msg
+                        if (!arg2 || (IDRequest = strtoi(arg2)) < 0)
+                            puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
+                        else if (!arg3 || !strlen(arg3))
+                            puts("No message was detected. Please try again.\n");
+                        else
+                            reply_Y((unsigned int) IDRequest, arg3);
                         break;
                     case 'N'  :
+                        // interpret the second usr inputted argument as semID, third as semaphore initial value
+                        if (!arg2 || (IDRequest = strtoi(arg2)) < 0)
+                            puts("Semaphore ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
+                        else {   // stroi() was designed to support positive int only, so we must break it down here to parse arg3
+                            if (!arg3)
+                                puts("Sem initial value not recognized. Please try again.\n(initial value can only be integers)\n");
+                            else {
+                                char *endptr;
+                                long l = strtol(arg3, &endptr, 0);
+                                // we make the exception of allowing trailing \r \n here
+                                if (errno == ERANGE || (*endptr != '\0' && *endptr != '\n' && *endptr != '\r') ||
+                                    arg3 == endptr || l < INT_MIN || l > INT_MAX) {
+                                    puts("Semaphore initial value not recognized. Please try again.\n(initial value can only be integers)\n");
+                                } else {  // safe to use
+                                    sem_N((unsigned int) IDRequest, (unsigned int) l);
+                                }
+                            }
+                        }
                         break;
                     case 'P'  :
+                        // interpret the second usr inputted argument as sem ID
+                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
+                            sem_P((unsigned int) IDRequest);
+                        else
+                            puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be integers between 0-4)\n");
                         break;
                     case 'V'  :
                         break;
                     case 'I'  :
                         // interpret the second usr inputted argument as pID
-                        if (arg2 && (pIDRequest = strtoi(arg2)) >= 0)
-                            procinfo_I((unsigned int) pIDRequest);
+                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
+                            procinfo_I((unsigned int) IDRequest);
                         else
                             puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
                         break;
@@ -476,9 +806,10 @@ int main() {
                 }
             } else
                 puts("Your input was not recognized! Please try again.\n");
-
+#ifdef DEBUG
             puts("\nThe process currently running is:\n");
             printProc(runningProc);
+#endif
         }
 
     }
