@@ -18,12 +18,12 @@
 #include <sys/poll.h>       // poll() to check if there is data on stdin buffer
 #include <errno.h>
 #include <limits.h> // INT_MAX||INT_MAX
-#include "LIST.h"
+#include "list.h"
 
 #define UNUSED 999  // for initializing unused semaphores
 // DEBUG macro is used to turn on various debugging features
 // Disable at the release version
-#define DEBUG
+// #define DEBUG
 
 // |-------------------------------------------------------------------------|
 // |                    Data Structures                                      |
@@ -41,7 +41,7 @@ char *enumStrings[] = {"READY", "RUNNING", "BLOCKED"};
 
 // Process Control block. 1 for each process
 // contains info about the process
-// used in list->node->data
+// used in LIST->node->data
 typedef struct pcb {
     unsigned int pID;    // process ID
     // only 1 byte unsigned int is needed
@@ -55,16 +55,16 @@ typedef struct pcb {
 // semaphore data struct to be provided to the user
 typedef struct sem {
     int sem;
-    list *procs; // a list of processes controlled by this semaphore
+    LIST *procs; // a LIST of processes controlled by this semaphore
 } sem;
 
 unsigned int highestPID;
-list *priorityQ[3];     // 3 lists for priority queue
+LIST *priorityQ[3];     // 3 LISTs for priority queue
 sem sems[5] = {[0 ... 4].sem=UNUSED};        // 5 semaphores available for user controlling processes
-list *waitingReply;    // used for sender blocked until reply
-list *waitingRcv;      // used for rcvers blocked until received
+LIST *waitingReply;    // used for sender blocked until reply
+LIST *waitingRcv;      // used for rcvers blocked until received
 
-// list procs will be initialized as needed
+// LIST procs will be initialized as needed
 unsigned int run;      // global variable to control whether the simulation is shutting down
 pcb *proc_init;     // special process to be put when nothing else is running
 pcb *runningProc;       // ptr to the process that is currently running
@@ -79,7 +79,10 @@ pcb *runningProc;       // ptr to the process that is currently running
 // return 0 upon success, 1 upon failure
 int printProc(pcb *procFound) {
     if (procFound) {
-        printf("The process with pID=%u, has:\n", procFound->pID);
+    	if(procFound==proc_init)
+	        printf("The special process \"init\" with pID=%u, has:\n", procFound->pID);
+	    else
+	        printf("The process with pID=%u, has:\n", procFound->pID);
         printf("\tPriority: %u (0 being top, 2 being lowest)\n", procFound->priority);
         printf("\tState: %s\n", enumStrings[procFound->state]);
         if (procFound->remotePID != UNUSED)
@@ -95,6 +98,11 @@ int printProc(pcb *procFound) {
 // Compare Process IDs (used for ListSearch() )
 int findPID(void *proc1, void *pID) {
     return ((pcb *) proc1)->pID == *(unsigned int *) pID ? 1 : 0;
+}
+
+// Compare Process IDs (used for ListSearch() )
+void freePcbList(void *proc) {
+    free((pcb *)proc);
 }
 
 // Calls ListSearch() on each priority queue
@@ -134,21 +142,21 @@ int thereIsNoProc() {
     // check all priority queues
     for (i = 0; i < 3; i++) {
         if (ListCount(priorityQ[i]))
-            return 1;
+            return 0;
     }
     // check all blocked queues
     if (ListCount(waitingRcv))
-        return 1;
+        return 0;
     if (ListCount(waitingReply))
-        return 1;
+        return 0;
     for (i = 0; i < 5; i++) {
         if (sems[i].sem != UNUSED && ListCount(priorityQ[i]))
-            return 1;
+            return 0;
     }
     // runningProc has to be proc_init if there are no other process
     if (runningProc && proc_init != runningProc)
-        return 1;
-    return 0;
+        return 0;
+    return 1;
 }
 
 // attempts to enqueue the process into the priority queue.
@@ -201,10 +209,10 @@ int enqueueProc(pcb *aProc) {
 
 // creates a new process initialized the highest priority, as multi-level feedback queue dictates
 pcb *createProc() {
-    if (highestPID > MAXNODECOUNT - 1) {
-        printf("Process creation failed! All the queues are full!\n");
-        return NULL;
-    }
+    // if (highestPID > MAXNODECOUNT - 1) {
+    //     printf("Process creation failed! All the queues are full!\n");
+    //     return NULL;
+    // }
     pcb *newProc = malloc(sizeof(pcb));
     // assume machine is 32 bit, unsigned int is 2 byte
     if (highestPID == 65535) {  //overflow occurred, loop back
@@ -231,7 +239,7 @@ void runNextProc() {
     if (returnPcb) {
         returnPcb->state = RUNNING;
         runningProc = returnPcb;
-    } else {    //all three lists are empty, make proc_init the running process
+    } else {    //all three LISTs are empty, make proc_init the running process
         proc_init->state = RUNNING;
         runningProc = proc_init;
     }
@@ -258,9 +266,16 @@ void deleteProc(pcb *delProc) {
                         "You have attempted to kill the special \"init\" process!\nThis is not allowed when there are still other processes running!\n");
             }
         } else {
-            if (delProc == runningProc)
+            if (delProc == runningProc){
+            	puts("The currently running process has been killed. Its properties are:\n");
+            	printProc(delProc);
                 runNextProc();
+            }
+           else{
+            printf("The process with pID%u has been killed. Its properties are:\n",delProc->pID);
+            printProc(delProc);
             free(delProc);
+            }
         }
     }
 //#ifdef DEBUG
@@ -352,7 +367,7 @@ void fork_F() {
     // create new process (the pcb)
     pcb *newProc = createProc();
     if (!newProc) {
-        fprintf(stderr, "Process creation failed! Are all the queues full?\n");
+        fprintf(stderr, "Process creation failed in forking! Are all the queues full?\n");
         return;
     }
     // copy pcb
@@ -366,10 +381,10 @@ void fork_F() {
         // purge new process
         free(newProc);
         highestPID--;
-        fprintf(stderr, "Process creation failed! Are all the queues full?\n");
+        fprintf(stderr, "Process creation failed in forking! Are all the queues full?\n");
     } else   // success
     {
-        printf("Process successfully created! The Process ID assigned is %u\n", newProc->pID);
+        printf("Process successfully forked! The Process ID assigned is %u\n", newProc->pID);
     }
 }
 
@@ -385,7 +400,7 @@ void kill_K(unsigned int delPID) {
     } else if (proc_init->pID == delPID) {
         procFound = proc_init;
     } else if ((queueFound = priorityQSearch(findPID, &delPID)) >= 0) {
-        // remove the node from list
+        // remove the node from LIST
         // NOTE: Data in node is NOT deleted but returned
         procFound = ListRemove(priorityQ[queueFound]);
     } else if ((queueFound = semSearch(findPID, &delPID)) >= 0) {
@@ -398,8 +413,6 @@ void kill_K(unsigned int delPID) {
 
     // deletes if found
     if (procFound) {
-        printf("Deleted:\n");
-        printProc(procFound);
         deleteProc(procFound);
     } else {
         printf("Did not find the process with ID %u.\nDeletion failed. Please try again.\n", delPID);
@@ -547,6 +560,7 @@ int sem_N(unsigned int semID, int initVal) {
         printf("semaphore [%u] is too large.\nOnly value 0-4 is acceptable. Please try again.\n", semID);
     else if (sems[semID].sem == UNUSED) {
         sems[semID].sem = initVal;
+        sems[semID].procs = ListCreate();
         printf("Semaphore [%u] is successfully initialized to %d.\n", semID, initVal);
     } else
         printf("Semaphore [%u] is already in use.\n", semID);
@@ -572,11 +586,12 @@ void sem_P(unsigned int semID) {
     if (sems[semID].sem <= 0) {    // implement blocking
         runningProc->state = BLOCKED;
         ListPrepend(sems[semID].procs, runningProc);
-        runNextProc();
         puts("is now blocked.\n");
+        runNextProc();
     } else
         puts("is not blocked and still running.\n");
     (sems[semID].sem)--;
+    printf("The value of this semaphore is now %d\n",sems[semID].sem);
 }
 
 // execute the semaphore V operation on behalf of the running process. 
@@ -601,6 +616,7 @@ void sem_V(unsigned int semID) {
         printf("No process was readied as no process was blocked by semaphore [%u]\n", semID);
 
     (sems[semID].sem)++;
+    printf("The value of this semaphore is now %d\n",sems[semID].sem);
 }
 
 // dump complete state information of process to screen 
@@ -643,6 +659,7 @@ void totalinfo_T() {
         ListLast(priorityQ[i]);
     }
 
+    puts("Displaying processes controlled by semaphores\n");
     for (unsigned int i = 0; i < 5; i++) {
         if (sems[i].sem != UNUSED) {
             printf("Displaying processes controlled by active semaphore [%u] :\n", i);
@@ -674,22 +691,13 @@ void totalinfo_T() {
     }
     // List->curr is out of bounds at this point, reset it to tail for consistency
     ListLast(waitingReply);
+    puts("\nThe process that is currently running is:\n");
+    printProc(runningProc);
+
 }
 
 
 int main() {
-    // initialize queues to be used
-    priorityQ[0] = ListCreate();
-    priorityQ[1] = ListCreate();
-    priorityQ[2] = ListCreate();
-    waitingReply = ListCreate();    // used for sender blocked until reply
-    waitingRcv = ListCreate();      // used for rcvers blocked until received
-
-    // global variables initialization
-    run = 1;
-    highestPID = 0;
-    proc_init = createProc();     // proc_init is set to run at the beginning
-    runningProc = proc_init;       // ptr to the process that is currently running
     // local variables initialization
     char usrInput[64];      // since the expected input is single char + a 40char max msg + some whitespace, buffer overflow is ok
     int IDRequest;
@@ -697,6 +705,21 @@ int main() {
     char *arg2;       // parsed second argument (pID)
     char *arg3;       // parsed third argument (msg)
     char flag;
+    int i;
+
+    // initialize queues to be used
+    for(i=0;i<3;i++)
+    	priorityQ[i] = ListCreate();
+    waitingReply = ListCreate();    // used for sender blocked until reply
+    waitingRcv = ListCreate();      // used for rcvers blocked until received
+
+    // global variables initialization
+    run = 1;
+    highestPID = 0;
+    proc_init = createProc();     // proc_init is set to run at the beginning
+    proc_init->state=READY;
+    runningProc = proc_init;       // ptr to the process that is currently running
+
 
     while (run) {
         if (stdinIsNotEmpty()) {
@@ -787,6 +810,11 @@ int main() {
                             puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be integers between 0-4)\n");
                         break;
                     case 'V'  :
+                        // interpret the second usr inputted argument as sem ID
+                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
+                            sem_V((unsigned int) IDRequest);
+                        else
+                            puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be integers between 0-4)\n");
                         break;
                     case 'I'  :
                         // interpret the second usr inputted argument as pID
@@ -810,10 +838,20 @@ int main() {
             puts("\nThe process currently running is:\n");
             printProc(runningProc);
 #endif
+            puts("--------------------------------------------------------\n");
         }
 
     }
 
+    // cleanup
+    for(i=0;i<3;i++)
+    	ListFree(priorityQ[i],freePcbList);
+    for(i=0;i<5;i++){
+    	if (sems[i].sem != UNUSED)
+	    	ListFree(sems[i].procs,freePcbList);
+    }
+    ListFree(waitingReply,freePcbList);
+    ListFree(waitingRcv,freePcbList);
 
     return 0;
 }
