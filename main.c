@@ -42,15 +42,10 @@
 // DEBUG macro is used to turn on various debugging features
 // Disable at the release version
 // #define DEBUG
-#define DEBUG2	//DEBUG2 macro is used for a less verbose debugging, also disabled at release ofc
+// #define DEBUG2	//DEBUG2 macro is used for a less verbose debugging, also disabled at release ofc
 
-#ifdef DEBUG2
-#include "LIST.h"	// use my own list to compile with CLion IDE
-#endif
+#include "list.h"	// use my own list to compile with CLion IDE
 
-#ifndef DEBUG2
-#include "list.h"	// use instructor provided list for release
-#endif
 
 // |-------------------------------------------------------------------------|
 // |                    Data Structures                                      |
@@ -139,11 +134,18 @@ int oneLinePrintProc(pcb * procPrint){
 
 // Compare Process IDs (used for ListSearch() )
 int findPID(void *proc1, void *pID) {
-	unsigned int pIDToBeFound=*( (unsigned int *) pID);
-#ifdef DEBUG2
-	printf("\n###pIDToBeFound is %u\n",pIDToBeFound);
-#endif
-    return ((pcb *) proc1)->pID == pIDToBeFound ? 1 : 0;
+	if(proc1 && pID){
+		unsigned int pIDToBeFound=*( (unsigned int *) pID);
+	#ifdef DEBUG2
+		printf("\n### pIDToBeFound is %u\n",pIDToBeFound);
+	#endif
+	    return ((pcb *) proc1)->pID == pIDToBeFound ? 1 : 0;
+	}
+	else
+		return 0;
+	#ifdef DEBUG2
+		printf("\n### findPID failed because an argument was NULL");
+	#endif
 }
 
 // Compare Process IDs (used for ListSearch() )
@@ -155,14 +157,25 @@ void freePcbList(void *proc) {
 // returns the queue priority # if found
 // returns -1 if not found
 int priorityQSearch(int (*comparator)(), void *comparisonArg) {
+#ifdef DEBUG2        	
+	printf("### begin finding %u in priority queues\n",*(unsigned int*) comparisonArg);
+#endif
+	pcb *procFound;
+
     int i;
     for (i = 0; i < 3; i++) {
-        if (ListSearch(priorityQ[i], comparator, comparisonArg)) {
-#ifdef DEBUG2        	
-        	printf("### priorityQSearch returning %d\n",i);
-#endif
+    	procFound=ListSearch(priorityQ[i], comparator, comparisonArg);
+#ifdef DEBUG2
+    	if(procFound)
+			printf("### Checked priorityQ[%d]. ListSearch() returned pID#%u\n",i,procFound->pID);
+		else
+			printf("### Checked priorityQ[%d]. ListSearch() returned NULL\n",i);
+#endif        
+        if (procFound ) {
             return i;
         }
+
+
     }
     return -1;
 }
@@ -459,15 +472,15 @@ void kill_K(unsigned int delPID) {
         procFound = runningProc;
     } else if (proc_init->pID == delPID) {
         procFound = proc_init;
-    } else if ((queueFound = priorityQSearch(findPID, &delPID)) >= 0) {
+    } else if ((queueFound = priorityQSearch(&findPID, &delPID)) >= 0) {
         // remove the node from LIST
         // NOTE: Data in node is NOT deleted but returned
         procFound = ListRemove(priorityQ[queueFound]);
-    } else if ((queueFound = semSearch(findPID, &delPID)) >= 0) {
+    } else if ((queueFound = semSearch(&findPID, &delPID)) >= 0) {
         procFound = ListRemove(sems[queueFound].procs);
-    } else if (ListSearch(waitingReply, findPID, &delPID) != NULL) {
+    } else if (ListSearch(waitingReply, &findPID, &delPID) != NULL) {
         procFound = ListRemove(waitingReply);
-    } else if (ListSearch(waitingRcv, findPID, &delPID) != NULL) {
+    } else if (ListSearch(waitingRcv, &findPID, &delPID) != NULL) {
         procFound = ListRemove(waitingRcv);
     }
 
@@ -539,13 +552,13 @@ void send_S(unsigned int remotePID, char *msg) {
         procFound=runningProc;
     } else if (proc_init->pID == remotePID) {
         procFound = proc_init;
-    } else if ((queueFound = priorityQSearch(findPID, &remotePID)) >= 0) {
+    } else if ((queueFound = priorityQSearch(&findPID, &remotePID)) >= 0) {
         procFound = ListCurr(priorityQ[queueFound]);
-    } else if ((queueFound = semSearch(findPID, &remotePID)) >= 0) {
+    } else if ((queueFound = semSearch(&findPID, &remotePID)) >= 0) {
         procFound = ListCurr(sems[queueFound].procs);
-    } else if (ListSearch(waitingReply, findPID, &remotePID) != NULL) {
+    } else if (ListSearch(waitingReply, &findPID, &remotePID) != NULL) {
         procFound = ListCurr(waitingReply);
-    } else if (ListSearch(waitingRcv, findPID, &remotePID) != NULL) {
+    } else if (ListSearch(waitingRcv, &findPID, &remotePID) != NULL) {
         // unblock the process waiting to rcv
         // (ListSearch() already sets curr to be the one found, which is the one that will be removed)
         procFound = ListRemove(waitingRcv);
@@ -579,7 +592,7 @@ void send_S(unsigned int remotePID, char *msg) {
 
 	    if(foundInWaiting_bool)
 	    {
-	    	printf("The recipient process with pID#%u is now unblocked.\n", msg);
+	    	printf("The recipient process with pID#%u is now unblocked.\n", procFound->pID);
 
 	    }
     }
@@ -621,7 +634,7 @@ void reply_Y(unsigned int remotePID, char *msg) {
 
     // search for the process ID to be sent (remotePID)
     // if its not waiting for reply, do not allow the message to be sent
-    if (ListSearch(waitingReply, findPID, &remotePID) != NULL) {
+    if (ListSearch(waitingReply, &findPID, &remotePID) != NULL) {
         procFound = ListRemove(waitingReply);
         enqueueProc(procFound);
     } else
@@ -661,11 +674,11 @@ void sem_P(unsigned int semID) {
                semID, semID);
         return;
     } else if (runningProc == proc_init) {
-        printf("The P operated on semaphore #%u failed because blocking the special process \"init\" is prohibited.\n",
+        printf("The P operation on semaphore #%u failed because blocking the special process \"init\" is prohibited.\n",
                semID);
         return;
     } else
-        printf("The P operated on semaphore #%u was successfully executed.\n", semID);
+        printf("The P operation on semaphore #%u was successfully executed.\n", semID);
 
     printf("The current running process ");
 #ifdef DEBUG
@@ -700,7 +713,7 @@ void sem_V(unsigned int semID) {
                semID, semID);
         return;
     } else
-        printf("The V operated on semaphore #%u was successfully executed.\n", semID);
+        printf("The V operation on semaphore #%u was successfully executed.\n", semID);
 
     if ((poppedProc = ListTrim(sems[semID].procs)) != NULL) {
         printf("The process ");
@@ -731,13 +744,13 @@ void procinfo_I(unsigned int pID) {
         procFound = runningProc;
     } else if (proc_init->pID == pID) {
         procFound = proc_init;
-    } else if ((queueFound = priorityQSearch(findPID, &pID)) >= 0) {
+    } else if ((queueFound = priorityQSearch(&findPID, &pID)) >= 0) {
         procFound = ListCurr(priorityQ[queueFound]);
-    } else if ((queueFound = semSearch(findPID, &pID)) >= 0) {
+    } else if ((queueFound = semSearch(&findPID, &pID)) >= 0) {
         procFound = ListCurr(sems[queueFound].procs);
-	} else if (ListSearch(waitingReply, findPID, &pID) != NULL) {
+	} else if (ListSearch(waitingReply, &findPID, &pID) != NULL) {
         procFound = ListCurr(waitingReply);
-    } else if (ListSearch(waitingRcv, findPID, &pID) != NULL) {
+    } else if (ListSearch(waitingRcv, &findPID, &pID) != NULL) {
         procFound = ListCurr(waitingRcv);
     }
 
@@ -831,19 +844,16 @@ int main() {
                 // clear argument variables
                 arg2 = NULL;
                 arg3 = NULL;
-                // second call with NULL returns the second token:
-                // http://www.cplusplus.com/reference/cstring/strtok/
+
                 arg1 = strtok(usrInput, " \t\r\n\v\f");     // trim any whitespaces
-                if (arg1) {
-                    arg2 = strtok(NULL, " \t\r\n\v\f");
-                    if (arg2)	// interpret all the rest as arg3
-                        arg3 = strtok(NULL, "\n");
-                }
+
                 // if flag is invalid, set it to invalid and await 'default' case
                 if (!arg1 || strlen(arg1) > 1)       // arg1 might be NULL or longer than 1 char
                     flag = 'Z';
                 else
                     flag = toupper(arg1[0]);
+
+                memset(&usrInput, 0, sizeof usrInput);
 
                 switch (flag) {
                     case 'C'  :
@@ -853,11 +863,21 @@ int main() {
                         fork_F();
                         break;
                     case 'K'  :
-                        // interpret the second usr inputted argument as pID
-                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
-                            kill_K((unsigned int) IDRequest);
-                        else
-                            puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\nFormat: Format: [K] [pID]\n");
+                    	puts("Please enter the process ID you would like to kill");
+
+			            if (!getstdinStr(usrInput, 64)) {
+			                // http://www.cplusplus.com/reference/cstring/strtok/	                
+		                    arg2 = strtok(usrInput, " \t\r\n\v\f");
+
+	                        // interpret the second usr inputted argument as pID
+	                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
+	                            kill_K((unsigned int) IDRequest);
+	                        else
+			                	puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
+			            }
+		                else
+		                	puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
+
                         break;
                     case 'E'  :
                         exit_E();
@@ -866,78 +886,146 @@ int main() {
                         quantum_Q();
                         break;
                     case 'S'  :
-                        // interpret the second usr inputted argument as pID, third as msg
-                        if (!arg2 || (IDRequest = strtoi(arg2)) < 0)
-                            puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\nFormat: [S] [pID] [msg]\n");
-                        else if (!arg3 || !strlen(arg3))
-                            puts("No message was detected. Please try again.\nFormat: [S] [pID] [msg]\n");
+                    	puts("Please enter the Process ID of the process you would like to send and the message.\nFormat: [pID] [msg]");
 
-                        else
-                            send_S((unsigned int) IDRequest, arg3);
+			            if (!getstdinStr(usrInput, 64)) {
+			                // http://www.cplusplus.com/reference/cstring/strtok/	                
+		                    arg2 = strtok(usrInput, " \t\r\n\v\f");
+		                    if (arg2)	// interpret all the rest as arg3
+		                    	// second call with NULL returns the second token:
+		                        arg3 = strtok(NULL, "\n");
+
+	                        // interpret the second usr inputted argument as pID, third as msg
+	                        if (!arg2 || (IDRequest = strtoi(arg2)) < 0)
+	                            puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\nFormat: [pID] [msg]\n");
+	                        else if (!arg3 || !strlen(arg3))
+	                            puts("No message was detected. Please try again.\nFormat: [pID] [msg]\n");
+	                        else
+	                            send_S((unsigned int) IDRequest, arg3);
+	                    }
+		                else
+		                	puts("Input not recognized. Please try again.\n");
                         break;
                     case 'R'  :
                         receive_R();
                         break;
                     case 'Y'  :
-                        // interpret the second usr inputted argument as pID, third as msg
-                        if (!arg2 || (IDRequest = strtoi(arg2)) < 0)
-                            puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\nFormat: [Y] [pID] [msg]");
-                        else if (!arg3 || !strlen(arg3))
-                            puts("No message was detected. Please try again.\nFormat: [Y] [pID] [msg]");
-                        else
-                            reply_Y((unsigned int) IDRequest, arg3);
+                    	puts("Please enter the Process ID of the process you would like to reply and the message.\nFormat: [pID] [msg]");
+
+			            if (!getstdinStr(usrInput, 64)) {
+			                // http://www.cplusplus.com/reference/cstring/strtok/	                
+		                    arg2 = strtok(usrInput, " \t\r\n\v\f");
+		                    if (arg2)	// interpret all the rest as arg3
+		                    	// second call with NULL returns the second token:
+		                        arg3 = strtok(NULL, "\n");
+
+	                        // interpret the second usr inputted argument as pID, third as msg
+	                        if (!arg2 || (IDRequest = strtoi(arg2)) < 0)
+	                            puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\nFormat: [pID] [msg]\n");
+	                        else if (!arg3 || !strlen(arg3))
+	                            puts("No message was detected. Please try again.\nFormat: [pID] [msg]\n");
+
+	                        else
+	                            reply_Y((unsigned int) IDRequest, arg3);
+	                    }
+		                else
+		                	puts("Input not recognized. Please try again.\n");
                         break;
                     case 'N'  :
-                        // interpret the second usr inputted argument as semID, third as semaphore initial value
-                        if (!arg2 || (IDRequest = strtoi(arg2)) < 0)
-                            puts("Semaphore ID not recognized. Please try again.\n(Process ID can only be positive integers)\nFormat: N [semID] [Initial Value]");
-                        else {   // stroi() was designed to support positive int only, so we must break it down here to parse arg3
-                            if (!arg3)
-                                puts("Sem initial value not recognized. Please try again.\n(initial value can only be integers)\nFormat: N [semID] [Initial Value]");
-                            else {
+                    	puts("Please enter the semaphore ID and the semaphore initial value for the semaphore you would like to initialize.");
+
+			            if (!getstdinStr(usrInput, 64)) {
+			                // http://www.cplusplus.com/reference/cstring/strtok/	                
+		                    arg2 = strtok(usrInput, " \t\r\n\v\f");
+		                    if (arg2)	// interpret all the rest as arg3
+		                    	// second call with NULL returns the second token:
+		                        arg3 = strtok(NULL, "\n");
+
+	                        // interpret the second usr inputted argument as pID, third as msg
+	                        if (!arg2 || (IDRequest = strtoi(arg2)) < 0)
+	                            puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be positive integers)\nFormat: [semID] [Initial Value]");
+	                        else if (!arg3 )
+	                            puts("Semaphore initial value not recognized. Please try again.\n(initial value can only be integers)\nFormat: [semID] [Initial Value]");
+	                        else{	// stroi() was designed to support positive int only, so we must break it down here to parse arg3
                                 char *endptr;
                                 long l = strtol(arg3, &endptr, 0);
                                 // we make the exception of allowing trailing \r \n here
                                 if (errno == ERANGE || (*endptr != '\0' && *endptr != '\n' && *endptr != '\r') ||
                                     arg3 == endptr || l < INT_MIN || l > INT_MAX) {
-                                    puts("Semaphore initial value not recognized. Please try again.\n(initial value can only be integers)\nFormat: N [semID] [Initial Value]");
+                                    puts("Semaphore initial value not recognized. Please try again.\n(initial value can only be integers)\nFormat: [semID] [Initial Value]");
                                 } else {  // safe to use
                                     sem_N((unsigned int) IDRequest, (unsigned int) l);
                                 }
-                            }
-                        }
+	                        }
+	                    }else
+		                	puts("Input not recognized. Please try again.\n");
                         break;
                     case 'P'  :
-                        // interpret the second usr inputted argument as sem ID
-                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
-                            sem_P((unsigned int) IDRequest);
-                        else{
-                            puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be integers between 0-4)\n");
-                        	puts("Format: P [semID]");
+                    	puts("Please enter the sempahore ID you would like to use.");
+
+			            if (!getstdinStr(usrInput, 64)) {
+			                // http://www.cplusplus.com/reference/cstring/strtok/	                
+		                    arg2 = strtok(usrInput, " \t\r\n\v\f");
+
+	                        // interpret the second usr inputted argument as pID
+	                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
+	                            sem_P((unsigned int) IDRequest);
+	                        else{
+	                            puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be integers between 0-4)\n");
+	                        	puts("Format: [semID]");
+                        	}
                         }
+		                else{
+	                            puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be integers between 0-4)\n");
+	                        	puts("Format: [semID]");
+                    	}
                         break;
                     case 'V'  :
-                        // interpret the second usr inputted argument as sem ID
-                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
-                            sem_V((unsigned int) IDRequest);
-                        else
-                            puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be integers between 0-4)\n");
+                    	puts("Please enter the sempahore ID you would like to use.");
+
+			            if (!getstdinStr(usrInput, 64)) {
+			                // http://www.cplusplus.com/reference/cstring/strtok/	                
+		                    arg2 = strtok(usrInput, " \t\r\n\v\f");
+
+	                        // interpret the second usr inputted argument as pID
+	                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
+	                            sem_V((unsigned int) IDRequest);
+	                        else{
+	                            puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be integers between 0-4)\n");
+	                        	puts("Format: [semID]");
+                        	}
+                        }
+		                else{
+	                            puts("Semaphore ID not recognized. Please try again.\n(Semaphore ID can only be integers between 0-4)\n");
+	                        	puts("Format: [semID]");
+                    	}
                         break;
                     case 'I'  :
-                        // interpret the second usr inputted argument as pID
-                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
-                            procinfo_I((unsigned int) IDRequest);
-                        else
-                            puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
+                    	puts("Please enter the Process ID you would like to display info for.");
+
+			            if (!getstdinStr(usrInput, 64)) {
+			                // http://www.cplusplus.com/reference/cstring/strtok/	                
+		                    arg2 = strtok(usrInput, " \t\r\n\v\f");
+
+	                        // interpret the second usr inputted argument as pID
+	                        if (arg2 && (IDRequest = strtoi(arg2)) >= 0)
+	                            procinfo_I((unsigned int) IDRequest);
+	                        else{
+								puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
+                        	}
+                        }
+		                else{
+							puts("Process ID not recognized. Please try again.\n(Process ID can only be positive integers)\n");
+                    	}
                         break;
                     case 'T'  :
                         totalinfo_T();
                         break;
                     default:
                         puts("Invalid Input. Please input command according to the manual");
-                        puts("[C] [F] [K pID] [E] [Q] [S pID MSG(40 char max)] [R]");
-                        puts("[Y pID MSG(40 char max)] [N semID Init_Value] [P semID] [V semID] [I pID] [T]");
-                        puts("Any subsequent chars after the expected are ignored.");
+                        puts("[C] [F] [K] [E] [Q] [S] [R]");
+                        puts("[Y] [N] [P] [V] [I] [T]");
+                        puts("Any subsequent arguments after the expected are ignored.");
                 }
             } else
                 puts("Your input was not recognized! Please try again.");
@@ -946,6 +1034,7 @@ int main() {
             printProc(runningProc);
 #endif
             puts("\n--------------------------------------------------------\n");
+            memset(&usrInput, 0, sizeof usrInput);
         }
 
     }
